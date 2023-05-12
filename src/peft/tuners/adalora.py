@@ -106,11 +106,9 @@ class AdaLoraModel(LoraModel):
             raise ValueError(
                 "AdaLoraModel supports only 1 adapter with bias. When using multiple adapters, set bias to 'none' for all adapters."
             )
-        traininable_mode_counter = 0
-        for config in self.peft_config.values():
-            if not config.inference_mode:
-                traininable_mode_counter += 1
-
+        traininable_mode_counter = sum(
+            1 for config in self.peft_config.values() if not config.inference_mode
+        )
         if traininable_mode_counter > 1:
             raise ValueError(
                 "AdaLoraModel supports only 1 trainable adapter. "
@@ -150,7 +148,6 @@ class AdaLoraModel(LoraModel):
                 if not is_target_modules_in_base_model:
                     is_target_modules_in_base_model = True
                 parent, target, target_name = _get_submodules(self.model, key)
-                bias = target.bias is not None
                 if isinstance(target, LoraLayer):
                     target.update_layer(
                         adapter_name,
@@ -160,15 +157,14 @@ class AdaLoraModel(LoraModel):
                         lora_config.init_lora_weights,
                     )
                 else:
+                    bias = target.bias is not None
                     if loaded_in_8bit and isinstance(target, bnb.nn.Linear8bitLt):
-                        kwargs.update(
-                            {
-                                "has_fp16_weights": target.state.has_fp16_weights,
-                                "memory_efficient_backward": target.state.memory_efficient_backward,
-                                "threshold": target.state.threshold,
-                                "index": target.index,
-                            }
-                        )
+                        kwargs |= {
+                            "has_fp16_weights": target.state.has_fp16_weights,
+                            "memory_efficient_backward": target.state.memory_efficient_backward,
+                            "threshold": target.state.threshold,
+                            "index": target.index,
+                        }
                         new_module = SVDLinear8bitLt(
                             adapter_name, target.in_features, target.out_features, bias=bias, **kwargs
                         )
@@ -243,7 +239,11 @@ class AdaLoraModel(LoraModel):
                 rank = rank_idx.sum().item()
             else:
                 raise ValueError("Unexcepted type of rank_idx")
-            key = ".".join(name.split(".")[0:-2]) if adapter_name in name else ".".join(name.split(".")[0:-1])
+            key = (
+                ".".join(name.split(".")[:-2])
+                if adapter_name in name
+                else ".".join(name.split(".")[:-1])
+            )
             _, target, _ = _get_submodules(self.model, key)
             lora_E_weights = target.lora_E[adapter_name][rank_idx]
             lora_A_weights = target.lora_A[adapter_name][rank_idx]
@@ -267,7 +267,11 @@ class AdaLoraModel(LoraModel):
     def resize_state_dict_by_rank_pattern(self, rank_pattern, state_dict, adapter_name):
         for name, rank_idx in rank_pattern.items():
             rank = sum(rank_idx)
-            prefix = ".".join(name.split(".")[0:-2]) if adapter_name in name else ".".join(name.split(".")[0:-1])
+            prefix = (
+                ".".join(name.split(".")[:-2])
+                if adapter_name in name
+                else ".".join(name.split(".")[:-1])
+            )
             for layer in ["lora_E", "lora_A", "lora_B"]:
                 key = f"base_model.model.{prefix}.{layer}.{adapter_name}"
                 if layer != "lora_B":
@@ -559,7 +563,6 @@ class RankAllocator(object):
         if step <= tinit:
             budget = self.init_bgt
             mask_ind = False
-        # Final fine-tuning
         elif step > total_step - tfinal:
             budget = self.target_bgt
             mask_ind = True
@@ -567,7 +570,7 @@ class RankAllocator(object):
             # Budget decreasing with a cubic scheduler
             mul_coeff = 1 - (step - tinit) / (total_step - tfinal - tinit)
             budget = int((self.init_bgt - self.target_bgt) * (mul_coeff**3) + self.target_bgt)
-            mask_ind = True if step % self.peft_config.deltaT == 0 else False
+            mask_ind = step % self.peft_config.deltaT == 0
         return budget, mask_ind
 
     def update_ipt(self, model):
@@ -592,8 +595,7 @@ class RankAllocator(object):
 
     def _combine_ipt(self, ipt_E, ipt_AB):
         ipt_AB = ipt_AB.sum(dim=1, keepdim=False)
-        sum_ipt = ipt_E.view(-1) + ipt_AB.view(-1)
-        return sum_ipt
+        return ipt_E.view(-1) + ipt_AB.view(-1)
 
     def mask_to_budget(self, model, budget):
         value_ipt = {}
@@ -660,11 +662,9 @@ class RankAllocator(object):
         return budget, rank_pattern
 
     def mask_using_rank_pattern(self, model, rank_pattern):
-        # Mask the unimportant triplets
-        is_adapter_name_truncated = False
-        if self.adapter_name not in next(iter(rank_pattern.keys())):
-            is_adapter_name_truncated = True
-
+        is_adapter_name_truncated = self.adapter_name not in next(
+            iter(rank_pattern.keys())
+        )
         with torch.no_grad():
             for n, p in model.named_parameters():
                 if f"lora_E.{self.adapter_name}" in n:

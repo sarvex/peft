@@ -50,10 +50,14 @@ def prepare_model_for_int8_training(
         # freeze base model's layers
         param.requires_grad = False
 
-        if loaded_in_8bit:
-            # cast layer norm in fp32 for stability for 8bit models
-            if param.ndim == 1 and any(layer_norm_name in name for layer_norm_name in layer_norm_names):
-                param.data = param.data.to(torch.float32)
+        if (
+            loaded_in_8bit
+            and param.ndim == 1
+            and any(
+                layer_norm_name in name for layer_norm_name in layer_norm_names
+            )
+        ):
+            param.data = param.data.to(torch.float32)
 
     if loaded_in_8bit and use_gradient_checkpointing:
         # For backward compatibility
@@ -170,13 +174,11 @@ def fsdp_auto_wrap_policy(model):
     from ..tuners import PrefixEncoder, PromptEmbedding, PromptEncoder
 
     def lambda_policy_fn(module):
-        if (
-            len(list(module.named_children())) == 0
+        return bool(
+            not list(module.named_children())
             and getattr(module, "weight", None) is not None
             and module.weight.requires_grad
-        ):
-            return True
-        return False
+        )
 
     lambda_policy = functools.partial(lambda_auto_wrap_policy, lambda_fn=lambda_policy_fn)
     transformer_wrap_policy = functools.partial(

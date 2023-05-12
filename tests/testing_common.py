@@ -68,7 +68,7 @@ CLASSES_MAPPING = {
 class ClassInstantier(OrderedDict):
     def __getitem__(self, key, *args, **kwargs):
         # check if any of the kwargs is inside the config class kwargs
-        if any([kwarg in self[key][1] for kwarg in kwargs]):
+        if any(kwarg in self[key][1] for kwarg in kwargs):
             new_config_kwargs = self[key][1].copy()
             new_config_kwargs.update(kwargs)
             return (self[key][0], new_config_kwargs)
@@ -100,7 +100,7 @@ class ClassInstantier(OrderedDict):
 
         for model_id in model_list:
             for key, value in self.items():
-                if "{}_kwargs".format(key) in grid_parameters:
+                if f"{key}_kwargs" in grid_parameters:
                     peft_configs = []
                     current_peft_config = value[1].copy()
                     for current_key, current_value in grid_parameters[f"{key}_kwargs"].items():
@@ -117,9 +117,10 @@ class ClassInstantier(OrderedDict):
                         current_peft_config.update({"task_type": task_type})
                     peft_configs = [current_peft_config]
 
-                for peft_config in peft_configs:
-                    generated_tests.append((f"test_{model_id}_{key}", model_id, value[0], peft_config))
-
+                generated_tests.extend(
+                    (f"test_{model_id}_{key}", model_id, value[0], peft_config)
+                    for peft_config in peft_configs
+                )
         if filter_params_func is not None:
             generated_tests = filter_params_func(generated_tests)
 
